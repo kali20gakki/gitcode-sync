@@ -1,0 +1,48 @@
+name: Batch sync GitCode → GitHub
+
+on:
+  schedule:
+    # 每天 UTC 03:00 跑一次
+    - cron: '0 3 * * *'
+  workflow_dispatch:   # 手动触发
+
+env:
+  GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+  TARGET_ORG: kali20gakki          # 想推到的 GitHub 用户/组织
+  # 下面写你要同步的 GitCode 仓库清单（可无限加）
+  REPOS: |
+    Ascend/msprof
+    Ascend/msprof-analyze
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sync repo（只为了用 bash 环境）
+        uses: actions/checkout@v4
+
+      - name: Setup git
+        run: |
+          git config --global user.name  "gitcode-sync-bot"
+          git config --global user.email "sync@example.com"
+
+      - name: Sync all repos
+        shell: bash
+        run: |
+          set -e
+          # 把 REPOS 变量读成数组
+          mapfile -t repos <<< "$REPOS"
+          for repo in "${repos[@]}"; do
+            [[ -z "$repo" ]] && continue
+            echo "==== Syncing $repo ===="
+            # 构造 HTTPS 地址（令牌嵌入）
+            GITCODE_URL="https://oauth2:${GITCODE_TOKEN}@gitcode.com/${repo}.git"
+            GITHUB_URL="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${TARGET_ORG}/${repo##*/}.git"
+
+            # 一次性 mirror
+            git clone --mirror "$GITCODE_URL" repo.git
+            cd repo.git
+            git push --mirror "$GITHUB_URL"
+            cd ..
+            rm -rf repo.git
+          done
