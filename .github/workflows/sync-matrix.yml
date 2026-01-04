@@ -30,19 +30,36 @@ jobs:
         shell: bash
         run: |
           set -e
-          # 把 REPOS 变量读成数组
           mapfile -t repos <<< "$REPOS"
           for repo in "${repos[@]}"; do
             [[ -z "$repo" ]] && continue
             echo "==== Syncing $repo ===="
-            # 构造 HTTPS 地址（令牌嵌入）
             GITCODE_URL="https://oauth2:${GITCODE_TOKEN}@gitcode.com/${repo}.git"
             GITHUB_URL="https://x-access-token:${{ secrets.GH_PAT }}@github.com/${TARGET_ORG}/${repo##*/}.git"
 
-            # 一次性 mirror
+            # 裸克隆
             git clone --mirror "$GITCODE_URL" repo.git
             cd repo.git
-            git push --mirror "$GITHUB_URL"
+
+            # 1. 强制推送所有分支、标签（不会尝试删除）
+            git push --force --all "$GITHUB_URL"
+            git push --force --tags "$GITHUB_URL"
+
+            # 2. 如果远端有 main 且本地没有，则删除它
+            #    （master 已推送成功，GitHub 允许删非默认分支）
+            if git ls-remote --heads "$GITHUB_URL" refs/heads/main | grep -q main; then
+              # 把默认分支临时换成 master，再删 main，然后立即换回来
+              gh api repos/${TARGET_ORG}/${repo##*/} \
+                 --method PATCH \
+                 --field default_branch=master \
+                 --header "Authorization: token ${{ secrets.GH_PAT }}"
+              git push --delete "$GITHUB_URL" main || true
+              gh api repos/${TARGET_ORG}/${repo##*/} \
+                 --method PATCH \
+                 --field default_branch=master \
+                 --header "Authorization: token ${{ secrets.GH_PAT }}"
+            fi
+
             cd ..
             rm -rf repo.git
           done
