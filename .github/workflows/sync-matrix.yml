@@ -37,7 +37,7 @@ jobs:
             echo "==== Syncing $repo ===="
             # 构造 HTTPS 地址（令牌嵌入）
             GITCODE_URL="https://oauth2:${GITCODE_TOKEN}@gitcode.com/${repo}.git"
-            GITHUB_URL="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${TARGET_ORG}/${repo##*/}.git"
+            GITHUB_URL="https://x-access-token:${{ secrets.GH_PAT }}@github.com/${TARGET_ORG}/${repo##*/}.git"
 
             # 一次性 mirror
             git clone --mirror "$GITCODE_URL" repo.git
