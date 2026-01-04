@@ -28,6 +28,8 @@ jobs:
 
       - name: Sync all repos
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}   # 给 gh cli 用
         run: |
           set -e
           mapfile -t repos <<< "$REPOS"
@@ -37,27 +39,19 @@ jobs:
             GITCODE_URL="https://oauth2:${GITCODE_TOKEN}@gitcode.com/${repo}.git"
             GITHUB_URL="https://x-access-token:${{ secrets.GH_PAT }}@github.com/${TARGET_ORG}/${repo##*/}.git"
 
-            # 裸克隆
             git clone --mirror "$GITCODE_URL" repo.git
             cd repo.git
 
-            # 1. 强制推送所有分支、标签（不会尝试删除）
+            # 强制推送分支与标签
             git push --force --all "$GITHUB_URL"
-            git push --force --tags "$GITHUB_URL"
+            git push --force --tags  "$GITHUB_URL"
 
-            # 2. 如果远端有 main 且本地没有，则删除它
-            #    （master 已推送成功，GitHub 允许删非默认分支）
+            # 如果远端有 main 就删掉（默认分支已换成 master，允许删除）
             if git ls-remote --heads "$GITHUB_URL" refs/heads/main | grep -q main; then
-              # 把默认分支临时换成 master，再删 main，然后立即换回来
               gh api repos/${TARGET_ORG}/${repo##*/} \
                  --method PATCH \
-                 --field default_branch=master \
-                 --header "Authorization: token ${{ secrets.GH_PAT }}"
+                 --field default_branch=master
               git push --delete "$GITHUB_URL" main || true
-              gh api repos/${TARGET_ORG}/${repo##*/} \
-                 --method PATCH \
-                 --field default_branch=master \
-                 --header "Authorization: token ${{ secrets.GH_PAT }}"
             fi
 
             cd ..
