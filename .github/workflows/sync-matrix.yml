@@ -1,58 +1,86 @@
-name: Batch sync GitCode → GitHub
+name: Batch sync GitCode to GitHub
 
 on:
   schedule:
-    # 每天 UTC 03:00 跑一次
     - cron: '0 3 * * *'
-  workflow_dispatch:   # 手动触发
+  workflow_dispatch:
 
 env:
   GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
-  TARGET_ORG: kali20gakki          # 想推到的 GitHub 用户/组织
-  # 下面写你要同步的 GitCode 仓库清单（可无限加）
+  TARGET_ORG: kali20gakki
+  # Format:
+  #   owner/repo            -> sync to TARGET_ORG/repo
+  #   owner/source|target   -> sync to TARGET_ORG/target
   REPOS: |
     Ascend/msprof
     Ascend/msprof-analyze
+    Ascend/msagent|msAgent
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout sync repo（只为了用 bash 环境）
+      - name: Checkout sync repo
         uses: actions/checkout@v4
 
       - name: Setup git
         run: |
-          git config --global user.name  "gitcode-sync-bot"
+          git config --global user.name "gitcode-sync-bot"
           git config --global user.email "sync@example.com"
 
       - name: Sync all repos
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}   # 给 gh cli 用
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          set -e
+          set -euo pipefail
           mapfile -t repos <<< "$REPOS"
-          for repo in "${repos[@]}"; do
-            [[ -z "$repo" ]] && continue
-            echo "==== Syncing $repo ===="
-            GITCODE_URL="https://oauth2:${GITCODE_TOKEN}@gitcode.com/${repo}.git"
-            GITHUB_URL="https://x-access-token:${{ secrets.GH_PAT }}@github.com/${TARGET_ORG}/${repo##*/}.git"
 
-            git clone --mirror "$GITCODE_URL" repo.git
+          for spec in "${repos[@]}"; do
+            [[ -z "$spec" ]] && continue
+
+            source_repo="${spec%%|*}"
+            target_repo="${spec##*|}"
+            if [[ "$spec" != *"|"* ]]; then
+              target_repo="${source_repo##*/}"
+            fi
+
+            echo "==== Syncing ${source_repo} -> ${TARGET_ORG}/${target_repo} ===="
+
+            gitcode_url="https://oauth2:${GITCODE_TOKEN}@gitcode.com/${source_repo}.git"
+            github_url="https://x-access-token:${GH_TOKEN}@github.com/${TARGET_ORG}/${target_repo}.git"
+
+            rm -rf repo.git
+            git clone --mirror "$gitcode_url" repo.git
             cd repo.git
 
-            # 强制推送分支与标签
-            git push --force --all "$GITHUB_URL"
-            git push --force --tags  "$GITHUB_URL"
-
-            # 如果远端有 main 就删掉（默认分支已换成 master，允许删除）
-            if git ls-remote --heads "$GITHUB_URL" refs/heads/main | grep -q main; then
-              gh api repos/${TARGET_ORG}/${repo##*/} \
-                 --method PATCH \
-                 --field default_branch=master
-              git push --delete "$GITHUB_URL" main || true
+            default_branch="$(git symbolic-ref --short HEAD 2>/dev/null || true)"
+            default_branch="${default_branch#refs/heads/}"
+            if [[ -z "$default_branch" ]]; then
+              if git show-ref --verify --quiet refs/heads/master; then
+                default_branch="master"
+              elif git show-ref --verify --quiet refs/heads/main; then
+                default_branch="main"
+              else
+                echo "Could not determine default branch for ${source_repo}" >&2
+                exit 1
+              fi
             fi
+
+            # Sync only branches and tags. Avoid pushing provider-specific refs
+            # such as refs/tmp/* that GitHub rejects or validates differently.
+            git push --force "$github_url" 'refs/heads/*:refs/heads/*'
+            git push --force "$github_url" 'refs/tags/*:refs/tags/*'
+
+            # Keep the GitHub default branch aligned before pruning old refs.
+            gh api "repos/${TARGET_ORG}/${target_repo}" \
+              --method PATCH \
+              --field default_branch="${default_branch}"
+
+            # Prune GitHub branches/tags that no longer exist on GitCode so
+            # GitCode remains the source of truth without mirroring all ref namespaces.
+            git push --prune "$github_url" 'refs/heads/*:refs/heads/*'
+            git push --prune "$github_url" 'refs/tags/*:refs/tags/*'
 
             cd ..
             rm -rf repo.git
